@@ -104,16 +104,29 @@ jobs:
         run: |
           cd dist
           sha256sum antigravity.apk antigravity-region-bypass.apk > SHA256SUMS.txt
+          sha256sum antigravity.apk > antigravity.apk.sha256
+          sha256sum antigravity-region-bypass.apk > antigravity-region-bypass.apk.sha256
           cat SHA256SUMS.txt
 
-      - name: Upload Build Artifacts
+      # Separate artifacts so the standard and region-bypass editions download
+      # independently (one zip each) instead of as a single bundle.
+      - name: Upload Standard APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: antigravity-binaries
+          name: antigravity-standard
+          if-no-files-found: error
           path: |
             dist/antigravity.apk
+            dist/antigravity.apk.sha256
+
+      - name: Upload Region Bypass APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: antigravity-region-bypass
+          if-no-files-found: error
+          path: |
             dist/antigravity-region-bypass.apk
-            dist/SHA256SUMS.txt
+            dist/antigravity-region-bypass.apk.sha256
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
