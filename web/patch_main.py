@@ -72,7 +72,7 @@ def patch_main(file_path):
         f"var [openAiConfigs,setOpenAiConfigs]=(0,{react_id}.useState)(()=>{{"
         "try{var raw='';if(window.Android&&typeof window.Android.getOpenAiConfigs==='function'){raw=window.Android.getOpenAiConfigs();}"
         "if(!raw)raw=localStorage.getItem('ag_openai_configs')||'';"
-        "if(raw){var arr=JSON.parse(raw);if(Array.isArray(arr)&&arr.length>0)return arr.slice(0,5);}"
+        "if(raw){var arr=JSON.parse(raw);if(Array.isArray(arr))arr=arr.filter(c=>c&&c.providerType!=='anthropic-setup-token');if(Array.isArray(arr)&&arr.length>0)return arr.slice(0,5);}"
         "var legacy=localStorage.getItem('ag_openai_config')||(window.Android&&typeof window.Android.getOpenAiConfig==='function'?window.Android.getOpenAiConfig():'');"
         "if(legacy){var c=JSON.parse(legacy);var mods=Array.isArray(c.models)?c.models:(typeof c.models==='string'?c.models.split(',').map(x=>x.trim()).filter(Boolean):[]);"
         "return [{id:'api-1',name:'API 1',url:c.url||'https://api.openai.com/v1',apiKey:c.apiKey||'',model:c.model||mods[0]||'gpt-4o',models:mods}];}"
@@ -86,14 +86,6 @@ def patch_main(file_path):
         f"var [showKeyText,setShowKeyText]=(0,{react_id}.useState)(!1);"
         f"var [isDetecting,setIsDetecting]=(0,{react_id}.useState)(!1);"
         f"var [detectStatus,setDetectStatus]=(0,{react_id}.useState)('');"
-        f"var [claudeUsage,setClaudeUsage]=(0,{react_id}.useState)(()=>{{"
-        "try{if(window.Android&&typeof window.Android.getLastClaudeUsage==='function'){return JSON.parse(window.Android.getLastClaudeUsage());}}catch(_){}return null;});"
-        f"var [isCheckingUsage,setIsCheckingUsage]=(0,{react_id}.useState)(!1);"
-        f"var checkClaudeUsageFn=(0,{react_id}.useCallback)((tok)=>{{"
-        "if(!window.Android||typeof window.Android.getClaudeUsage!=='function')return;"
-        "setIsCheckingUsage(!0);try{var raw=window.Android.getClaudeUsage(tok||'');if(raw){setClaudeUsage(JSON.parse(raw));}}catch(_){}finally{setIsCheckingUsage(!1);}"
-        "},[]);"
-        "var fmtReset=function(r){if(!r)return '';try{var d=/^\\d+$/.test(String(r))?new Date(Number(r)*1000):new Date(r);var diff=Math.max(0,d.getTime()-Date.now());if(isNaN(diff))return '';var mins=Math.floor(diff/60000),hrs=Math.floor(mins/60),days=Math.floor(hrs/24);if(days>0)return 'resets in '+days+'d '+(hrs%24)+'h';if(hrs>0)return 'resets in '+hrs+'h '+(mins%60)+'m';return 'resets in '+mins+'m';}catch(_){return '';}};"
         f"var addApiSlot=(0,{react_id}.useCallback)(()=>{{"
         "setOpenAiConfigs(prev=>{if(prev.length>=5)return prev;"
         "var nextIdx=prev.length;"
@@ -107,8 +99,7 @@ def patch_main(file_path):
         "},[]);"
         f"var detectModelsFn=(0,{react_id}.useCallback)(async(u,k)=>{{"
         "setIsDetecting(!0);setDetectStatus('Detecting models...');try{"
-        "var isClaude=activeCfg.providerType==='anthropic-setup-token';"
-        "var targetUrl=isClaude?'https://api.anthropic.com/v1':(u||'https://api.openai.com/v1');"
+        "var targetUrl=u||'https://api.openai.com/v1';"
         "var raw='';"
         "if(window.Android&&typeof window.Android.fetchOpenAiModels==='function'){"
         "raw=window.Android.fetchOpenAiModels(targetUrl,k);"
@@ -118,9 +109,7 @@ def patch_main(file_path):
         "raw=await res.text();"
         "}"
         "var d=JSON.parse(raw);"
-        "if(isClaude){checkClaudeUsageFn(k);}"
         "if(d.error){"
-        "if(isClaude){var defC=['claude-sonnet-4-5-20250929','claude-opus-4-5-20251101','claude-3-7-sonnet-20250219','claude-3-5-sonnet-20241022','claude-3-5-haiku-20241022'];updateActiveCfg({models:defC,model:defC.includes(activeCfg.model)?activeCfg.model:defC[0]});setDetectStatus('Loaded '+defC.length+' Claude models');return;}"
         "var em=typeof d.error==='string'?d.error:(d.error.message||JSON.stringify(d.error));setDetectStatus('Error: '+em);return;}"
         "var l=[];if(Array.isArray(d.data)){l=d.data.map(m=>m.id||m.name).filter(Boolean);}"
         "else if(Array.isArray(d.models)){l=d.models.map(m=>m.name||m.id||m.model).filter(Boolean);}"
@@ -129,13 +118,12 @@ def patch_main(file_path):
         "else{setDetectStatus('No models found at endpoint.');}"
         "}catch(err){setDetectStatus('Failed: '+(err.message||String(err)));}"
         "finally{setIsDetecting(!1);}"
-        "},[activeCfg,updateActiveCfg,checkClaudeUsageFn]);"
+        "},[activeCfg,updateActiveCfg]);"
         f"var saveOpenAiConfigFn=(0,{react_id}.useCallback)(()=>{{"
-        "var bridgeUrl=(window.Android&&typeof window.Android.getAnthropicBridgeUrl==='function')?window.Android.getAnthropicBridgeUrl():'';"
         "var normalized=openAiConfigs.slice(0,5).map((c,idx)=>{"
-        "var pt=c.providerType||'openai';"
-        "var u=pt==='anthropic-setup-token'?(bridgeUrl||(c.url||'').trim()||'https://api.anthropic.com/v1'):((c.url||'').trim()||'https://api.openai.com/v1');"
-        "var k=c.apiKey||'';var m=(c.model||'').trim()||(pt==='anthropic-setup-token'?'claude-sonnet-4-5-20250929':'gpt-4o');"
+        "var pt='openai';"
+        "var u=(c.url||'').trim()||'https://api.openai.com/v1';"
+        "var k=c.apiKey||'';var m=(c.model||'').trim()||'gpt-4o';"
         "var mods=Array.isArray(c.models)&&c.models.length>0?c.models.slice():[m];"
         "if(!mods.includes(m))mods.unshift(m);"
         "return {id:c.id||('api-'+(idx+1)),name:(c.name||'').trim()||('API '+(idx+1)),providerType:pt,url:u,apiKey:k,model:m,models:mods};});"
@@ -169,11 +157,11 @@ def patch_main(file_path):
         f'showOpenAiModal?{react_id}.createElement(NC,{{'
         'isOpen:showOpenAiModal,'
         'onClose:()=>setShowOpenAiModal(!1),'
-        'title:"Model Sources (OpenAI & Claude)",'
+        'title:"Model Sources (OpenAI-compatible)",'
         'className:"w-[92vw] max-w-[480px] rounded-xl",'
         'zClassName:"z-[8500]"'
         f'}},{react_id}.createElement("div",{{className:"flex flex-col gap-3 py-1 text-foreground"}},'
-        f'{react_id}.createElement("p",{{className:"text-xs text-muted-foreground m-0 -mt-2"}},"Configure up to 5 OpenAI-compatible APIs or Claude (setup-token)"),'
+        f'{react_id}.createElement("p",{{className:"text-xs text-muted-foreground m-0 -mt-2"}},"Configure up to 5 OpenAI-compatible API endpoints & models"),'
         f'{react_id}.createElement("div",{{className:"flex flex-wrap items-center gap-1.5 pb-1 border-b border-border"}},'
         f'openAiConfigs.map(function(cfg,idx){{var isSel=idx===activeApiIdx;var hasKey=Boolean(cfg.apiKey&&cfg.apiKey.trim());'
         f'return {react_id}.createElement("button",{{key:cfg.id||idx,type:"button",onClick:()=>{{setActiveApiIdx(idx);setDetectStatus("");}},'
@@ -183,12 +171,6 @@ def patch_main(file_path):
         f'openAiConfigs.length<5?{react_id}.createElement("button",{{type:"button",onClick:addApiSlot,'
         'className:"px-2.5 py-1 text-xs rounded-md font-medium cursor-pointer bg-muted/60 text-foreground border border-dashed border-border hover:bg-muted transition-colors"},"+ Add API ("+openAiConfigs.length+"/5)"):null'
         '),'
-        f'{react_id}.createElement("div",{{className:"flex items-center gap-1.5 p-1 bg-muted rounded-md"}},'
-        f'{react_id}.createElement("button",{{type:"button",onClick:()=>updateActiveCfg({{providerType:"openai",url:(!activeCfg.url||activeCfg.url.includes("127.0.0.1")||activeCfg.url.includes("anthropic.com"))?"https://api.openai.com/v1":activeCfg.url}}),'
-        'className:"flex-1 py-1 text-xs rounded font-medium cursor-pointer border-none transition-colors "+((activeCfg.providerType||"openai")==="openai"?"bg-background text-foreground shadow-xs":"bg-transparent text-muted-foreground")},"OpenAI Compatible"),'
-        f'{react_id}.createElement("button",{{type:"button",onClick:()=>{{var bu=(window.Android&&typeof window.Android.getAnthropicBridgeUrl==="function")?window.Android.getAnthropicBridgeUrl():"https://api.anthropic.com/v1";var defM=["claude-sonnet-4-5-20250929","claude-opus-4-5-20251101","claude-3-7-sonnet-20250219","claude-3-5-sonnet-20241022","claude-3-5-haiku-20241022"];updateActiveCfg({{providerType:"anthropic-setup-token",name:(activeCfg.name||"").startsWith("API ")?"Claude":activeCfg.name,url:bu,model:(!activeCfg.model||activeCfg.model==="gpt-4o")?defM[0]:activeCfg.model,models:(Array.isArray(activeCfg.models)&&activeCfg.models.length>0)?activeCfg.models:defM}});}},'
-        'className:"flex-1 py-1 text-xs rounded font-medium cursor-pointer border-none transition-colors "+(activeCfg.providerType==="anthropic-setup-token"?"bg-background text-foreground shadow-xs":"bg-transparent text-muted-foreground")},"Claude (setup-token)")'
-        '),'
         f'{react_id}.createElement("div",{{className:"flex flex-col gap-1.5"}},'
         f'{react_id}.createElement("div",{{className:"flex items-center justify-between"}},'
         f'{react_id}.createElement("label",{{className:"text-xs font-medium text-foreground"}},"Provider Label"),'
@@ -196,10 +178,9 @@ def patch_main(file_path):
         'className:"text-xs text-destructive hover:underline cursor-pointer bg-transparent border-none p-0"},"Remove Slot"):null'
         '),'
         f'{react_id}.createElement("input",{{type:"text",value:activeCfg.name||"",onChange:e=>updateActiveCfg({{name:e.target.value}}),'
-        'placeholder:"e.g. OpenAI, Claude, DeepSeek, Groq, Ollama",'
+        'placeholder:"e.g. OpenAI, DeepSeek, Groq, OpenRouter, Ollama",'
         'className:"w-full rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary placeholder:text-muted-foreground transition-colors"})'
         '),'
-        f'activeCfg.providerType==="anthropic-setup-token"?{react_id}.createElement("div",{{className:"text-[11px] text-emerald-500 bg-emerald-500/10 border border-emerald-500/30 rounded-md px-2.5 py-1.5"}},"Built-in OpenAI <-> Anthropic bridge active (paste token from claude setup-token)"):'
         f'{react_id}.createElement("div",{{className:"flex flex-col gap-1.5"}},'
         f'{react_id}.createElement("label",{{className:"text-xs font-medium text-foreground"}},"Base URL (Endpoint)"),'
         f'{react_id}.createElement("input",{{type:"text",value:activeCfg.url||"",onChange:e=>updateActiveCfg({{url:e.target.value}}),'
@@ -208,33 +189,14 @@ def patch_main(file_path):
         '),'
         f'{react_id}.createElement("div",{{className:"flex flex-col gap-1.5"}},'
         f'{react_id}.createElement("div",{{className:"flex items-center justify-between"}},'
-        f'{react_id}.createElement("label",{{className:"text-xs font-medium text-foreground"}},activeCfg.providerType==="anthropic-setup-token"?"Claude Setup Token (claude setup-token)":"API Key"),'
+        f'{react_id}.createElement("label",{{className:"text-xs font-medium text-foreground"}},"API Key"),'
         f'{react_id}.createElement("button",{{type:"button",onClick:()=>setShowKeyText(!showKeyText),'
         'className:"text-xs text-primary hover:underline cursor-pointer bg-transparent border-none p-0"},showKeyText?"Hide":"Show")'
         '),'
         f'{react_id}.createElement("input",{{type:showKeyText?"text":"password",value:activeCfg.apiKey||"",onChange:e=>updateActiveCfg({{apiKey:e.target.value}}),'
-        'placeholder:activeCfg.providerType==="anthropic-setup-token"?"sk-ant-oat01-...":"sk-...",'
+        'placeholder:"sk-...",'
         'className:"w-full rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary placeholder:text-muted-foreground transition-colors"})'
         '),'
-        f'activeCfg.providerType==="anthropic-setup-token"?{react_id}.createElement("div",{{className:"flex flex-col gap-1.5 rounded-md border border-border bg-muted/30 p-2.5"}},'
-        f'{react_id}.createElement("div",{{className:"flex items-center justify-between"}},'
-        f'{react_id}.createElement("span",{{className:"text-[11px] font-semibold text-foreground"}},"Claude Quota (5h & 7d)"),'
-        f'{react_id}.createElement("button",{{type:"button",disabled:isCheckingUsage||!activeCfg.apiKey,onClick:()=>checkClaudeUsageFn(activeCfg.apiKey),'
-        'className:"text-[11px] text-primary hover:underline cursor-pointer bg-transparent border-none p-0 disabled:opacity-50"},isCheckingUsage?"Checking...":"Check Usage")'
-        '),'
-        f'claudeUsage&&(claudeUsage.fiveHourRemaining!==undefined||claudeUsage.sevenDayRemaining!==undefined)?'
-        f'{react_id}.createElement("div",{{className:"flex flex-col gap-1 text-[11px] text-muted-foreground"}},'
-        f'claudeUsage.fiveHourRemaining!==undefined?{react_id}.createElement("div",{{className:"flex items-center justify-between"}},'
-        f'{react_id}.createElement("span",null,"5-Hour: "+claudeUsage.fiveHourRemaining+"% left"),'
-        f'{react_id}.createElement("span",{{className:"text-[10px] opacity-80"}},fmtReset(claudeUsage.fiveHourReset))'
-        '):null,'
-        f'claudeUsage.sevenDayRemaining!==undefined?{react_id}.createElement("div",{{className:"flex items-center justify-between"}},'
-        f'{react_id}.createElement("span",null,"7-Day: "+claudeUsage.sevenDayRemaining+"% left"),'
-        f'{react_id}.createElement("span",{{className:"text-[10px] opacity-80"}},fmtReset(claudeUsage.sevenDayReset))'
-        '):null'
-        '):'
-        f'{react_id}.createElement("span",{{className:"text-[11px] text-muted-foreground"}},"Tap Check Usage (or send a message) to read 5h & 7d remaining quota.")'
-        '):null,'
         f'{react_id}.createElement("div",{{className:"flex flex-wrap items-center gap-2 pt-1"}},'
         f'{react_id}.createElement("button",{{type:"button",disabled:isDetecting||!activeCfg.url,onClick:()=>detectModelsFn(activeCfg.url,activeCfg.apiKey),'
         'className:"px-3 py-1.5 text-xs rounded-md bg-secondary text-secondary-foreground font-medium hover:bg-muted border border-border cursor-pointer flex items-center gap-1.5 transition-colors disabled:opacity-50"},isDetecting?"Detecting...":"🔍 Detect Models"),'
@@ -336,10 +298,10 @@ def patch_main(file_path):
         '[gzbDetectStatus,setGzbDetectStatus]=(0,A.useState)(""),'
         'detectModelsInGzb=async()=>{\n'
         'setGzbIsDetecting(!0);setGzbDetectStatus("Detecting...");try{\n'
-        'var targetU=provider==="claude"?"https://api.anthropic.com/v1":(m||"https://api.openai.com/v1");\n'
+        'var targetU=m||"https://api.openai.com/v1";\n'
         'var raw="";if(window.Android&&typeof window.Android.fetchOpenAiModels==="function"){raw=window.Android.fetchOpenAiModels(targetU,apiKey);}\n'
         'else{var fu=targetU.replace(/\\/+$/,"")+"/models";var res=await fetch(fu,{headers:apiKey?{"Authorization":"Bearer "+apiKey}:{}});raw=await res.text();}\n'
-        'var d=JSON.parse(raw);if(d.error){if(provider==="claude"){var defC=["claude-sonnet-4-5-20250929","claude-opus-4-5-20251101","claude-3-7-sonnet-20250219","claude-3-5-sonnet-20241022","claude-3-5-haiku-20241022"];setGzbDetectedModels(defC);setGzbDetectStatus("Loaded "+defC.length+" Claude models");if(!k||!defC.includes(k))l(defC[0]);return;}setGzbDetectStatus("Error: "+(typeof d.error==="string"?d.error:(d.error.message||JSON.stringify(d.error))));return;}\n'
+        'var d=JSON.parse(raw);if(d.error){setGzbDetectStatus("Error: "+(typeof d.error==="string"?d.error:(d.error.message||JSON.stringify(d.error))));return;}\n'
         'var list=[];if(Array.isArray(d.data)){list=d.data.map(item=>item.id||item.name).filter(Boolean);}\n'
         'else if(Array.isArray(d.models)){list=d.models.map(item=>item.name||item.id||item.model).filter(Boolean);}\n'
         'if(list.length>0){list.sort();setGzbDetectedModels(list);setGzbDetectStatus("Found "+list.length+" models!");if(!k||!list.includes(k)){l(list[0]);}}\n'
@@ -353,32 +315,31 @@ def patch_main(file_path):
 
     gzb_save_target = 'L=p(I.ModelInfoSchema,{modelId:I.Model.GOOGLE_GEMINI_INTERNAL_BYOM,apiProvider:I.APIProvider.API_PROVIDER_GOOGLE_EVERGREEN,chatModelName:k,modelName:m,maxTokens:Math.max(0,Math.min(Number(q)||0,Number.MAX_SAFE_INTEGER)),modelFeatures:L});b==="edit"&&e?g({type:"editCustomModel",oldLabel:e,label:k,modelInfo:L}):g({type:"addCustomModel",label:k,modelInfo:L});h({label:k,value:I.Model.GOOGLE_GEMINI_INTERNAL_BYOM,isCustom:!0,customModelUrl:L.modelName,disabled:!1});'
     gzb_save_replacement = (
-        'if(provider==="openai"||provider==="claude"){try{var isCl=provider==="claude";var bu=(isCl&&window.Android&&typeof window.Android.getAnthropicBridgeUrl==="function")?window.Android.getAnthropicBridgeUrl():"";var u=isCl?(bu||m||"https://api.anthropic.com/v1"):(m||"https://api.openai.com/v1");'
+        'if(provider==="openai"){try{var u=m||"https://api.openai.com/v1";'
         'var rawC="";if(window.Android&&typeof window.Android.getOpenAiConfigs==="function")rawC=window.Android.getOpenAiConfigs();'
         'if(!rawC)rawC=localStorage.getItem("ag_openai_configs")||"";'
-        'var cfgs=[];if(rawC){try{var pa=JSON.parse(rawC);if(Array.isArray(pa))cfgs=pa}catch(_){}}'
-        'var pType=isCl?"anthropic-setup-token":"openai";'
-        'var matchIdx=cfgs.findIndex(c=>c&&(isCl?c.providerType==="anthropic-setup-token":(c.url===u&&c.apiKey===apiKey)));'
+        'var cfgs=[];if(rawC){try{var pa=JSON.parse(rawC);if(Array.isArray(pa))cfgs=pa.filter(c=>c&&c.providerType!=="anthropic-setup-token")}catch(_){}}'
+        'var pType="openai";'
+        'var matchIdx=cfgs.findIndex(c=>c&&c.url===u&&c.apiKey===apiKey);'
         'if(matchIdx<0)matchIdx=cfgs.findIndex(c=>c&&(!c.apiKey||!c.apiKey.trim()));'
         'var modsToSave=gzbDetectedModels&&gzbDetectedModels.length>0?gzbDetectedModels.slice():[k];if(!modsToSave.includes(k))modsToSave.unshift(k);'
-        'if(matchIdx>=0){var exMods=Array.isArray(cfgs[matchIdx].models)?cfgs[matchIdx].models:[];modsToSave.forEach(x=>{if(x&&!exMods.includes(x))exMods.push(x)});cfgs[matchIdx]=Object.assign({},cfgs[matchIdx],{providerType:pType,name:isCl?"Claude":(cfgs[matchIdx].name||"API "+(matchIdx+1)),url:u,apiKey:apiKey,model:k,models:exMods});}'
-        'else if(cfgs.length<5){matchIdx=cfgs.length;cfgs.push({id:"api-"+(matchIdx+1),name:isCl?"Claude":"API "+(matchIdx+1),providerType:pType,url:u,apiKey:apiKey,model:k,models:modsToSave});}'
-        'else{matchIdx=cfgs.length-1;cfgs[matchIdx]=Object.assign({},cfgs[matchIdx],{providerType:pType,name:isCl?"Claude":(cfgs[matchIdx].name||"API "+(matchIdx+1)),url:u,apiKey:apiKey,model:k,models:modsToSave});}'
+        'if(matchIdx>=0){var exMods=Array.isArray(cfgs[matchIdx].models)?cfgs[matchIdx].models:[];modsToSave.forEach(x=>{if(x&&!exMods.includes(x))exMods.push(x)});cfgs[matchIdx]=Object.assign({},cfgs[matchIdx],{providerType:pType,name:(cfgs[matchIdx].name||"API "+(matchIdx+1)),url:u,apiKey:apiKey,model:k,models:exMods});}'
+        'else if(cfgs.length<5){matchIdx=cfgs.length;cfgs.push({id:"api-"+(matchIdx+1),name:"API "+(matchIdx+1),providerType:pType,url:u,apiKey:apiKey,model:k,models:modsToSave});}'
+        'else{matchIdx=cfgs.length-1;cfgs[matchIdx]=Object.assign({},cfgs[matchIdx],{providerType:pType,name:(cfgs[matchIdx].name||"API "+(matchIdx+1)),url:u,apiKey:apiKey,model:k,models:modsToSave});}'
         'localStorage.setItem("ag_openai_configs",JSON.stringify(cfgs));'
         'localStorage.setItem("ag_openai_config",JSON.stringify({url:u,apiKey:apiKey,model:k,models:cfgs[matchIdx].models}));'
         'if(window.Android&&typeof window.Android.setOpenAiConfigs==="function")window.Android.setOpenAiConfigs(JSON.stringify(cfgs),matchIdx);'
         'else if(window.Android&&typeof window.Android.setOpenAiConfig==="function")window.Android.setOpenAiConfig(u,apiKey,cfgs[matchIdx].models.join(","));'
         'window.dispatchEvent(new Event("ag-openai-configs-updated"));'
         '}catch(_){}}'
-        'var _effUrl=(provider==="claude"&&window.Android&&typeof window.Android.getAnthropicBridgeUrl==="function")?(window.Android.getAnthropicBridgeUrl()||m):m;'
-        'L=p(I.ModelInfoSchema,{modelId:I.Model.GOOGLE_GEMINI_INTERNAL_BYOM,apiProvider:(provider==="openai"||provider==="claude")?I.APIProvider.API_PROVIDER_OPENAI_VERTEX:I.APIProvider.API_PROVIDER_GOOGLE_EVERGREEN,chatModelName:k,modelName:_effUrl||(provider==="openai"?"https://api.openai.com/v1":""),maxTokens:Math.max(0,Math.min(Number(q)||0,Number.MAX_SAFE_INTEGER)),modelFeatures:L});b==="edit"&&e?g({type:"editCustomModel",oldLabel:e,label:k,modelInfo:L}):g({type:"addCustomModel",label:k,modelInfo:L});h({label:k,value:I.Model.GOOGLE_GEMINI_INTERNAL_BYOM,isCustom:!0,customModelUrl:L.modelName,disabled:!1});'
+        'L=p(I.ModelInfoSchema,{modelId:I.Model.GOOGLE_GEMINI_INTERNAL_BYOM,apiProvider:provider==="openai"?I.APIProvider.API_PROVIDER_OPENAI_VERTEX:I.APIProvider.API_PROVIDER_GOOGLE_EVERGREEN,chatModelName:k,modelName:m||(provider==="openai"?"https://api.openai.com/v1":""),maxTokens:Math.max(0,Math.min(Number(q)||0,Number.MAX_SAFE_INTEGER)),modelFeatures:L});b==="edit"&&e?g({type:"editCustomModel",oldLabel:e,label:k,modelInfo:L}):g({type:"addCustomModel",label:k,modelInfo:L});h({label:k,value:I.Model.GOOGLE_GEMINI_INTERNAL_BYOM,isCustom:!0,customModelUrl:L.modelName,disabled:!1});'
     )
     if gzb_save_target in content:
         content = content.replace(gzb_save_target, gzb_save_replacement, 1)
-        print("[web-patch] Gzb save callback updated with OpenAI & Claude persistence")
+        print("[web-patch] Gzb save callback updated with OpenAI persistence")
 
     gzb_dis_target = "onClick:J,disabled:!k||!m||!q"
-    gzb_dis_replacement = 'onClick:J,disabled:!k||!q||((provider==="openai"||provider==="claude")?!apiKey:!m)'
+    gzb_dis_replacement = 'onClick:J,disabled:!k||!q||(provider==="openai"?!apiKey:!m)'
     if gzb_dis_target in content:
         content = content.replace(gzb_dis_target, gzb_dis_replacement, 1)
         print("[web-patch] Gzb validation logic updated")
@@ -387,11 +348,9 @@ def patch_main(file_path):
     tab_replacement = (
         'A.createElement("div",{className:"grid w-full grid-cols-1 gap-2"},'
         'A.createElement("div",{className:"flex items-center gap-1 mb-1 p-1 bg-muted rounded-md w-full"},'
-        'A.createElement("button",{type:"button",onClick:()=>{setProvider("openai");if(!m||m.startsWith("gemini-api:")||m.includes("anthropic.com")||m.includes("127.0.0.1"))n("https://api.openai.com/v1");if(!k||k.startsWith("claude-"))l("gpt-4o");if(!q)r("128000")},'
+        'A.createElement("button",{type:"button",onClick:()=>{setProvider("openai");if(!m||m.startsWith("gemini-api:"))n("https://api.openai.com/v1");if(!k)l("gpt-4o");if(!q)r("128000")},'
         'className:"flex-1 py-1.5 text-[11px] rounded-md font-medium cursor-pointer border-none transition-colors "+(provider==="openai"?"bg-background text-foreground shadow-xs":"bg-transparent text-muted-foreground hover:text-foreground")},"OpenAI"),'
-        'A.createElement("button",{type:"button",onClick:()=>{setProvider("claude");var bu=(window.Android&&typeof window.Android.getAnthropicBridgeUrl==="function")?window.Android.getAnthropicBridgeUrl():"https://api.anthropic.com/v1";n(bu);if(!k||k==="gpt-4o")l("claude-sonnet-4-5-20250929");if(!q)r("200000");setGzbDetectedModels(["claude-sonnet-4-5-20250929","claude-opus-4-5-20251101","claude-3-7-sonnet-20250219","claude-3-5-sonnet-20241022","claude-3-5-haiku-20241022"])},'
-        'className:"flex-1 py-1.5 text-[11px] rounded-md font-medium cursor-pointer border-none transition-colors "+(provider==="claude"?"bg-background text-foreground shadow-xs":"bg-transparent text-muted-foreground hover:text-foreground")},"Claude (setup-token)"),'
-        'A.createElement("button",{type:"button",onClick:()=>{setProvider("gemini");if(m==="https://api.openai.com/v1"||m.includes("anthropic.com")||m.includes("127.0.0.1"))n("")},'
+        'A.createElement("button",{type:"button",onClick:()=>{setProvider("gemini");if(m==="https://api.openai.com/v1")n("")},'
         'className:"flex-1 py-1.5 text-[11px] rounded-md font-medium cursor-pointer border-none transition-colors "+(provider==="gemini"?"bg-background text-foreground shadow-xs":"bg-transparent text-muted-foreground hover:text-foreground")},"Gemini")'
         '),'
         'A.createElement("div",{className:"flex flex-col gap-1"},\nA.createElement("label",{htmlFor:C,className:"text-sm"},"Model Label")'
@@ -402,22 +361,22 @@ def patch_main(file_path):
 
     apikey_field_target = "placeholder:'e.g. \"gemini-api:/models/gemini-v3-byom\"'}))),"
     apikey_field_replacement = (
-        'placeholder:provider==="openai"?"https://api.openai.com/v1":(provider==="claude"?"Built-in Claude Bridge":\'e.g. "gemini-api:/models/gemini-v3-byom"\')}))),'
-        '((provider==="openai"||provider==="claude")?'
+        'placeholder:provider==="openai"?"https://api.openai.com/v1":\'e.g. "gemini-api:/models/gemini-v3-byom"\'}))),'
+        '(provider==="openai"?'
         'A.createElement("div",{className:"flex flex-col gap-2"},'
         'A.createElement("div",{className:"flex flex-col gap-1"},'
         'A.createElement("div",{className:"flex items-center justify-between"},'
-        'A.createElement("label",{className:"text-sm"},provider==="claude"?"Claude Setup Token (claude setup-token)":"API Key"),'
+        'A.createElement("label",{className:"text-sm"},"API Key"),'
         'A.createElement("button",{type:"button",onClick:()=>setShowKey(s=>!s),'
         'className:"text-xs text-muted-foreground hover:text-foreground cursor-pointer bg-transparent border-none"},showKey?"Hide":"Show")'
         '),'
         'A.createElement("div",{className:"bg-muted rounded-md w-full"},'
         'A.createElement("input",{type:showKey?"text":"password",value:apiKey,onChange:L=>setApiKey(L.target.value),onKeyDown:K,'
-        'placeholder:provider==="claude"?"sk-ant-oat01-...":"sk-...",className:"w-full rounded-md border-none bg-background p-2 text-foreground outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus:ring-transparent placeholder:text-muted-foreground"})'
+        'placeholder:"sk-...",className:"w-full rounded-md border-none bg-background p-2 text-foreground outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus:ring-transparent placeholder:text-muted-foreground"})'
         ')'
         '),'
         'A.createElement("div",{className:"flex flex-wrap items-center gap-2 pt-1"},'
-        'A.createElement("button",{type:"button",disabled:gzbIsDetecting||(!m&&provider!=="claude"),onClick:detectModelsInGzb,'
+        'A.createElement("button",{type:"button",disabled:gzbIsDetecting||!m,onClick:detectModelsInGzb,'
         'className:"px-3 py-1.5 text-xs rounded-md bg-secondary text-secondary-foreground font-medium hover:bg-muted border border-border cursor-pointer flex items-center gap-1.5 transition-colors disabled:opacity-50"},gzbIsDetecting?"Detecting...":"🔍 Detect Models"),'
         'gzbDetectStatus?A.createElement("span",{className:"text-xs "+(gzbDetectStatus.startsWith("Error")?"text-destructive font-medium":(gzbDetectStatus.startsWith("Found")||gzbDetectStatus.startsWith("Loaded")?"text-emerald-500 font-medium":"text-muted-foreground"))},gzbDetectStatus):null'
         '),'
@@ -442,7 +401,7 @@ def patch_main(file_path):
     # 6a. Inject _getAgOpenAiModels, update cKa, Py, and dKa
     cka_target = 'var cKa=a=>a?.customModels?Object.entries(a.customModels).map(([b,c])=>({label:b,value:c.modelId,isCustom:!0,customModelUrl:c.modelName})):[],Py=(a,b)=>{if(b?.customModels)return b.customModels[a]};var dKa=(a,b,c)=>{if(a=a.find(e=>e.label===c))return a;if(b=b.find(e=>e.label===c))return b};'
     cka_replacement = (
-        'var _loadAgOpenAiConfigs=()=>{try{var raw="";'
+        'var _loadAgOpenAiConfigsRaw=()=>{try{var raw="";'
         'if(window.Android&&typeof window.Android.getOpenAiConfigs==="function")raw=window.Android.getOpenAiConfigs();'
         'var ls=localStorage.getItem("ag_openai_configs");'
         'if(ls){try{var arr=JSON.parse(ls);if(Array.isArray(arr)&&arr.length>0)return arr.slice(0,5)}catch(_){}}'
@@ -451,10 +410,11 @@ def patch_main(file_path):
         'if(window.Android&&typeof window.Android.getOpenAiConfig==="function")rLegacy=window.Android.getOpenAiConfig();'
         'var cfg=null;if(s){try{cfg=JSON.parse(s)}catch(_){}}else if(rLegacy){try{var rc=JSON.parse(rLegacy);if(rc.apiKey&&rc.apiKey.trim())cfg=rc}catch(_){}}'
         'if(cfg)return [cfg]}catch(_){}return []};'
+        'var _loadAgOpenAiConfigs=()=>_loadAgOpenAiConfigsRaw().filter(c=>c&&c.providerType!=="anthropic-setup-token");'
         'var _extractMods=cfg=>{var mods=[];if(cfg.model&&typeof cfg.model==="string"&&cfg.model.trim())mods.push(cfg.model.trim());'
         'if(Array.isArray(cfg.models))cfg.models.forEach(m=>{if(m&&typeof m==="string"&&m.trim()&&!mods.includes(m.trim()))mods.push(m.trim())});'
         'else if(typeof cfg.models==="string")cfg.models.split(",").forEach(m=>{m=m.trim();if(m&&!mods.includes(m))mods.push(m)});return mods};'
-        'var _resolveAgUrl=cfg=>{if(cfg&&cfg.providerType==="anthropic-setup-token"&&window.Android&&typeof window.Android.getAnthropicBridgeUrl==="function"){try{var bu=window.Android.getAnthropicBridgeUrl();if(bu)return bu}catch(_){}}return (cfg&&cfg.url)||"https://api.openai.com/v1"};'
+        'var _resolveAgUrl=cfg=>(cfg&&cfg.url)||"https://api.openai.com/v1";'
         'var _getAgOpenAiModels=()=>{var res=[],seen={};try{var cfgs=_loadAgOpenAiConfigs();'
         'for(var cfg of cfgs){if(!cfg)continue;var hasKey=cfg.apiKey&&String(cfg.apiKey).trim();var mods=_extractMods(cfg);'
         'if(!hasKey&&mods.length===0)continue;var url=_resolveAgUrl(cfg);if(mods.length===0)mods.push("gpt-4o");'
@@ -532,7 +492,7 @@ def patch_main(file_path):
         content = content.replace(fka_sel_target, fka_sel_replacement, 1)
         print("[web-patch] fKa C() fallback to _getAgOpenAiModels enabled")
 
-    # 7. Intercept sendUserCascadeMessage for custom BYOM/OpenAI/Claude models
+    # 7. Intercept sendUserCascadeMessage for custom BYOM/OpenAI models
     send_msg_target = 'l=async n=>{var q=p(ii,n);xJa(q.cascadeId,q);return f("sendUserCascadeMessage",n,r=>r.sendUserCascadeMessage(q))}'
     send_msg_replacement = 'l=async n=>{var q=p(ii,n);xJa(q.cascadeId,q);if(window.__agHandleCustomCascadeMessage&&window.__agHandleCustomCascadeMessage(q))return{};return f("sendUserCascadeMessage",n,r=>r.sendUserCascadeMessage(q))}'
     if send_msg_target in content:

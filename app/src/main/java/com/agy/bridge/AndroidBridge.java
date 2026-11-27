@@ -34,28 +34,26 @@ public final class AndroidBridge {
         this.themeBridge = new ThemeBridge(theme);
         this.engine = new EngineBridge(runtime);
         this.config = new EngineConfigJson(appContext, runtime, engine, shizuku, themeBridge);
-        initAnthropicBridgeIfConfigured();
+        removeLegacyClaudeConfigs();
     }
 
-    private void initAnthropicBridgeIfConfigured() {
+    // The Claude (setup-token) source and its local bridge were removed. Drop
+    // any saved setup-token entries so they are not shown or used as an
+    // OpenAI-compatible endpoint.
+    private void removeLegacyClaudeConfigs() {
         try {
             android.content.SharedPreferences sp = appContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
             String raw = sp.getString(KEY_OPENAI_CONFIGS, "");
-            if (raw != null && !raw.trim().isEmpty()) {
-                org.json.JSONArray arr = new org.json.JSONArray(raw);
-                for (int i = 0; i < arr.length(); i++) {
-                    org.json.JSONObject obj = arr.optJSONObject(i);
-                    if (obj != null && "anthropic-setup-token".equals(obj.optString("providerType", ""))) {
-                        String tok = obj.optString("apiKey", "").trim();
-                        if (!tok.isEmpty()) {
-                            AnthropicBridgeServer srv = AnthropicBridgeServer.getInstance(appContext);
-                            srv.setToken(tok);
-                            obj.put("url", srv.getBaseUrl());
-                            sp.edit().putString(KEY_OPENAI_CONFIGS, arr.toString()).apply();
-                            break;
-                        }
-                    }
-                }
+            if (raw == null || raw.trim().isEmpty()) return;
+            org.json.JSONArray arr = new org.json.JSONArray(raw);
+            org.json.JSONArray kept = new org.json.JSONArray();
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject obj = arr.optJSONObject(i);
+                if (obj != null && "anthropic-setup-token".equals(obj.optString("providerType", ""))) continue;
+                kept.put(arr.get(i));
+            }
+            if (kept.length() != arr.length()) {
+                sp.edit().putString(KEY_OPENAI_CONFIGS, kept.toString()).apply();
             }
         } catch (Exception ignored) {}
     }
@@ -190,56 +188,11 @@ public final class AndroidBridge {
     }
 
     @JavascriptInterface
-    public String getAnthropicBridgeUrl() {
-        return AnthropicBridgeServer.getInstance(appContext).getBaseUrl();
-    }
-
-    // In-process Claude chat for the top-level UI (token-gated like saveBlob):
-    // the https WebView cannot fetch the http:// loopback bridge.
-    @JavascriptInterface
-    public String claudeChatStart(String token, String body, String apiKey) {
-        if (!matchesNativeBridgeToken(token)) return "";
-        return AnthropicBridgeServer.getInstance(appContext).startNativeChat(body, apiKey);
-    }
-
-    @JavascriptInterface
-    public String claudeChatPoll(String token, String id, int offset) {
-        if (!matchesNativeBridgeToken(token)) return "{\"error\":\"forbidden\"}";
-        return AnthropicBridgeServer.getInstance(appContext).pollNativeChat(id, offset);
-    }
-
-    @JavascriptInterface
-    public void claudeChatCancel(String token, String id) {
-        if (matchesNativeBridgeToken(token)) {
-            AnthropicBridgeServer.getInstance(appContext).cancelNativeChat(id);
-        }
-    }
-
-    @JavascriptInterface
-    public String getLastClaudeUsage() {
-        return AnthropicBridgeServer.getInstance(appContext).getUsageJson();
-    }
-
-    @JavascriptInterface
-    public String getClaudeUsage(String token) {
-        final String[] res = new String[1];
-        Thread t = new Thread(() -> res[0] = AnthropicBridgeServer.getInstance(appContext).fetchUsageJson(token));
-        t.start();
-        try {
-            t.join(12000);
-        } catch (InterruptedException e) {
-            return "{\"error\":\"Timed out\"}";
-        }
-        return res[0] != null ? res[0] : AnthropicBridgeServer.getInstance(appContext).getUsageJson();
-    }
-
-    @JavascriptInterface
     public boolean setOpenAiConfigs(String configsJson, int activeIndex) {
         try {
             org.json.JSONArray input = new org.json.JSONArray(configsJson == null ? "[]" : configsJson);
             org.json.JSONArray capped = new org.json.JSONArray();
             int limit = Math.min(input.length(), MAX_OPENAI_CONFIGS);
-            String anthropicToken = "";
             for (int i = 0; i < limit; i++) {
                 org.json.JSONObject src = input.optJSONObject(i);
                 if (src == null) continue;
@@ -253,10 +206,7 @@ public final class AndroidBridge {
                 String model = src.optString("model", "gpt-4o");
                 org.json.JSONArray mods = src.optJSONArray("models");
                 if (mods == null) mods = new org.json.JSONArray();
-                if ("anthropic-setup-token".equals(pType) && !key.trim().isEmpty()) {
-                    anthropicToken = key.trim();
-                    url = AnthropicBridgeServer.getInstance(appContext).getBaseUrl();
-                }
+                if ("anthropic-setup-token".equals(pType)) continue; // source removed
                 clean.put("id", id);
                 clean.put("name", name.isEmpty() ? ("API " + (i + 1)) : name);
                 clean.put("providerType", pType);
@@ -265,10 +215,6 @@ public final class AndroidBridge {
                 clean.put("model", model);
                 clean.put("models", mods);
                 capped.put(clean);
-            }
-
-            if (!anthropicToken.isEmpty()) {
-                AnthropicBridgeServer.getInstance(appContext).setToken(anthropicToken);
             }
 
             android.content.SharedPreferences sp = appContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
@@ -402,12 +348,7 @@ public final class AndroidBridge {
                     String k = apiKey.trim();
                     if (target.contains("api.anthropic.com") || k.startsWith("sk-ant-")) {
                         conn.setRequestProperty("anthropic-version", "2023-06-01");
-                        if (k.startsWith("sk-ant-oat")) {
-                            conn.setRequestProperty("Authorization", "Bearer " + k);
-                            conn.setRequestProperty("anthropic-beta", "oauth-2025-04-20");
-                        } else {
-                            conn.setRequestProperty("x-api-key", k);
-                        }
+                        conn.setRequestProperty("x-api-key", k);
                     } else {
                         conn.setRequestProperty("Authorization", "Bearer " + k);
                     }
@@ -576,14 +517,14 @@ public final class AndroidBridge {
                     count++;
                 }
             }
-            // Reload OpenAI/Claude configs into SharedPreferences if restored
+            // Reload OpenAI-compatible configs into SharedPreferences if restored
             java.io.File restoredConfigs = new java.io.File(geminiDir, "config/openai_configs.json");
             if (restoredConfigs.isFile()) {
                 String raw = com.agy.util.IoUtil.readAll(new java.io.FileInputStream(restoredConfigs), "UTF-8");
                 if (raw != null && !raw.trim().isEmpty()) {
                     appContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
                             .edit().putString(KEY_OPENAI_CONFIGS, raw.trim()).apply();
-                    initAnthropicBridgeIfConfigured();
+                    removeLegacyClaudeConfigs();
                 }
             }
             return "{\"ok\":true,\"action\":\"import\",\"files\":" + count + "}";

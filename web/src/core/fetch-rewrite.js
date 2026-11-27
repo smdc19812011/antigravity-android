@@ -91,7 +91,7 @@ function interceptProjectRpc(path, bodyData) {
   return null;
 }
 
-// --- Custom OpenAI / Claude ConnectRPC Bridge ---
+// --- Custom OpenAI-compatible ConnectRPC Bridge ---
 var _customChatStreams = Object.create(null);
 var _customChatPendingFrames = Object.create(null);
 var _customChatState = Object.create(null);
@@ -153,7 +153,8 @@ function resolveCustomProviderConfig(modelLabel, baseUrl) {
     if (!raw) raw = (global.localStorage && global.localStorage.getItem('ag_openai_configs')) || '';
     if (raw) {
       var arr = JSON.parse(raw);
-      if (Array.isArray(arr)) cfgs = arr;
+      // Claude setup-token sources were removed; ignore any saved leftovers.
+      if (Array.isArray(arr)) cfgs = arr.filter(function (c) { return c && c.providerType !== 'anthropic-setup-token'; });
     }
   } catch (_) {}
   var matched = null;
@@ -166,101 +167,10 @@ function resolveCustomProviderConfig(modelLabel, baseUrl) {
       break;
     }
   }
-  if (!matched && /^claude/i.test(String(modelLabel || ''))) {
-    for (var j = 0; j < cfgs.length; j++) {
-      if (cfgs[j] && cfgs[j].providerType === 'anthropic-setup-token') { matched = cfgs[j]; break; }
-    }
-  }
   if (!matched && cfgs.length > 0) matched = cfgs[0];
   var url = baseUrl || (matched && matched.url) || 'https://api.openai.com/v1';
-  // The saved URL may point at an old bridge port (it falls back to a random
-  // port when 18421 is busy), so always ask for the live bridge address.
-  var isLocalBridge = /^http:\/\/127\.0\.0\.1:\d+\/v1\/?$/.test(url);
-  if (((matched && matched.providerType === 'anthropic-setup-token') || isLocalBridge) &&
-      global.Android && typeof global.Android.getAnthropicBridgeUrl === 'function') {
-    try {
-      var bu = global.Android.getAnthropicBridgeUrl();
-      if (bu) url = bu;
-    } catch (_) {}
-  }
   var apiKey = (matched && matched.apiKey) ? String(matched.apiKey).trim() : '';
-  var viaBridge = !!((matched && matched.providerType === 'anthropic-setup-token') || isLocalBridge);
-  return { url: url.replace(/\/+$/, ''), apiKey: apiKey, viaBridge: viaBridge };
-}
-
-// Claude (setup-token) requests run inside the native bridge instead of
-// fetch(): the page is https and the WebView blocks http:// loopback
-// subresources, so fetch('http://127.0.0.1:<port>/...') fails on device.
-// Native code buffers the bridge's raw HTTP response; we poll it and rebuild a
-// streaming Response so callers can treat it like fetch().
-function canUseNativeClaude() {
-  return !!(global.Android && typeof global.Android.claudeChatStart === 'function' &&
-    typeof global.Android.claudeChatPoll === 'function' && global.__AG_NATIVE_BRIDGE_TOKEN__);
-}
-
-function base64ToBytes(b64) {
-  var bin = atob(b64 || '');
-  var out = new Uint8Array(bin.length);
-  for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function nativeClaudeFetch(bodyText, apiKey) {
-  var A = global.Android;
-  var tok = global.__AG_NATIVE_BRIDGE_TOKEN__;
-  var id = A.claudeChatStart(tok, bodyText, apiKey || '');
-  if (!id) return Promise.reject(new Error('Native Claude bridge refused the request'));
-  var offset = 0;
-  function poll() {
-    var res = JSON.parse(A.claudeChatPoll(tok, id, offset) || '{}');
-    if (res.error) throw new Error('Native Claude bridge: ' + res.error);
-    var bytes = base64ToBytes(res.data);
-    offset += bytes.length;
-    return { done: !!res.done, bytes: bytes };
-  }
-  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-  function concat(a, b) {
-    var m = new Uint8Array(a.length + b.length); m.set(a, 0); m.set(b, a.length); return m;
-  }
-  function indexOfCrlf2(buf) {
-    for (var i = 0; i + 3 < buf.length; i++) {
-      if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) return i;
-    }
-    return -1;
-  }
-  // Read until the HTTP header block is complete, then stream the rest.
-  var head = new Uint8Array(0);
-  function readHead() {
-    var r = poll();
-    head = concat(head, r.bytes);
-    var at = indexOfCrlf2(head);
-    if (at !== -1) return { at: at, done: r.done };
-    if (r.done) throw new Error('Native Claude bridge returned no response');
-    return wait(40).then(readHead);
-  }
-  return Promise.resolve().then(readHead).then(function (h) {
-    var headerText = new TextDecoder().decode(head.subarray(0, h.at));
-    var m = /^HTTP\/1\.[01] (\d{3})/.exec(headerText);
-    var status = m ? parseInt(m[1], 10) : 502;
-    var rest = head.subarray(h.at + 4);
-    var finished = h.done;
-    var body = new ReadableStream({
-      start: function (c) { if (rest.length) c.enqueue(rest); },
-      pull: function (c) {
-        if (finished) { c.close(); return; }
-        return wait(40).then(function () {
-          var r = poll();
-          if (r.bytes.length) c.enqueue(r.bytes);
-          if (r.done) { finished = true; if (!r.bytes.length) c.close(); }
-        });
-      },
-      cancel: function () {
-        try { if (typeof A.claudeChatCancel === 'function') A.claudeChatCancel(tok, id); } catch (_) {}
-      }
-    });
-    // Response() forbids a body for 204/304; the bridge never sends those here.
-    return new Response(status === 204 ? null : body, { status: status });
-  });
+  return { url: url.replace(/\/+$/, ''), apiKey: apiKey };
 }
 
 function extractBodyText(bodyData) {
@@ -407,12 +317,7 @@ function runCustomModelTurn(origFetch, cascadeId, userText, modelLabel, baseUrl)
     messages: state.messages,
     stream: true
   });
-  var useNative = cfg.viaBridge && canUseNativeClaude();
-  if (useNative) endpoint = 'native Claude bridge';
-  (useNative
-    ? nativeClaudeFetch(reqBody, cfg.apiKey)
-    : origFetch(endpoint, { method: 'POST', headers: headers, body: reqBody })
-  ).then(function (res) {
+  origFetch(endpoint, { method: 'POST', headers: headers, body: reqBody }).then(function (res) {
     if (!res.ok) {
       return res.text().then(function (errTxt) {
         throw new Error('HTTP ' + res.status + (errTxt ? ': ' + errTxt : ''));
@@ -595,7 +500,7 @@ function installFetchRewrite() {
 
       // Absolute core URL (https://127.0.0.1:<port>/exa....): main.js's normal
       // case, since the page is based at the core origin. No URL rewrite is
-      // needed; only the custom OpenAI/Claude bridge hooks apply.
+      // needed; only the custom OpenAI-compatible bridge hooks apply.
       if (typeof resource === 'string') {
         var absPath = absoluteRpcPathFrom(resource);
         if (absPath) {
