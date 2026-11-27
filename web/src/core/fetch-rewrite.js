@@ -166,9 +166,17 @@ function resolveCustomProviderConfig(modelLabel, baseUrl) {
       break;
     }
   }
+  if (!matched && /^claude/i.test(String(modelLabel || ''))) {
+    for (var j = 0; j < cfgs.length; j++) {
+      if (cfgs[j] && cfgs[j].providerType === 'anthropic-setup-token') { matched = cfgs[j]; break; }
+    }
+  }
   if (!matched && cfgs.length > 0) matched = cfgs[0];
   var url = baseUrl || (matched && matched.url) || 'https://api.openai.com/v1';
-  if (matched && matched.providerType === 'anthropic-setup-token' &&
+  // The saved URL may point at an old bridge port (it falls back to a random
+  // port when 18421 is busy), so always ask for the live bridge address.
+  var isLocalBridge = /^http:\/\/127\.0\.0\.1:\d+\/v1\/?$/.test(url);
+  if (((matched && matched.providerType === 'anthropic-setup-token') || isLocalBridge) &&
       global.Android && typeof global.Android.getAnthropicBridgeUrl === 'function') {
     try {
       var bu = global.Android.getAnthropicBridgeUrl();
@@ -369,8 +377,12 @@ function runCustomModelTurn(origFetch, cascadeId, userText, modelLabel, baseUrl)
     }
     return pump();
   }).catch(function (err) {
+    var msg = err && err.message ? err.message : String(err);
+    // A TypeError here means no HTTP response at all (refused/dropped
+    // connection), so say which endpoint could not be reached.
+    if (err && err.name === 'TypeError') msg += ' (could not reach ' + endpoint + ')';
     assistantStep.status = 3;
-    assistantStep.plannerResponse.response = 'Error (' + modelLabel + '): ' + (err && err.message ? err.message : String(err));
+    assistantStep.plannerResponse.response = 'Error (' + modelLabel + '): ' + msg;
     pushCustomChatUpdate(cascadeId, state.steps, false);
   });
 }

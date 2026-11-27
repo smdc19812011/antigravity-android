@@ -108,62 +108,124 @@ public final class AnthropicBridgeServer {
         return "http://127.0.0.1:" + port + "/v1";
     }
 
+    /** Tracks whether any response bytes were sent, so errors can still be reported. */
+    private static final class TrackingOutputStream extends java.io.FilterOutputStream {
+        volatile boolean started;
+        TrackingOutputStream(OutputStream o) { super(o); }
+        @Override public void write(int b) throws java.io.IOException { started = true; out.write(b); }
+        @Override public void write(byte[] b, int off, int len) throws java.io.IOException { started = true; out.write(b, off, len); }
+    }
+
     private void handleClient(Socket client) {
+        TrackingOutputStream out = null;
         try (Socket s = client) {
             s.setSoTimeout(120_000);
             InputStream in = new BufferedInputStream(s.getInputStream());
-            OutputStream out = s.getOutputStream();
-
-            String requestLine = readLine(in);
-            if (requestLine == null || requestLine.isEmpty()) return;
-            String[] parts = requestLine.split(" ");
-            if (parts.length < 2) return;
-            String method = parts[0].toUpperCase(Locale.US);
-            String path = parts[1];
-            int qIdx = path.indexOf('?');
-            if (qIdx >= 0) path = path.substring(0, qIdx);
-
-            int contentLength = 0;
-            String authHeader = "";
-            String headerLine;
-            while ((headerLine = readLine(in)) != null && !headerLine.isEmpty()) {
-                int colon = headerLine.indexOf(':');
-                if (colon > 0) {
-                    String name = headerLine.substring(0, colon).trim().toLowerCase(Locale.US);
-                    String val = headerLine.substring(colon + 1).trim();
-                    if ("content-length".equals(name)) {
-                        try { contentLength = Integer.parseInt(val); } catch (NumberFormatException ignored) {}
-                    } else if ("authorization".equals(name)) {
-                        authHeader = val;
-                    }
-                }
-            }
-
-            byte[] bodyBytes = new byte[0];
-            if (contentLength > 0 && contentLength < 16 * 1024 * 1024) {
-                bodyBytes = readExact(in, contentLength);
-            }
-
-            if ("OPTIONS".equals(method)) {
-                writeJsonResponse(out, 204, "");
-                return;
-            }
-
-            String activeToken = this.token;
-            if ((activeToken == null || activeToken.isEmpty()) && authHeader.toLowerCase(Locale.US).startsWith("bearer ")) {
-                activeToken = authHeader.substring(7).trim();
-            }
-
-            if ("GET".equals(method) && (path.endsWith("/models") || "/models".equals(path))) {
-                handleModels(out, activeToken);
-            } else if ("POST".equals(method) && (path.endsWith("/chat/completions") || "/chat/completions".equals(path))) {
-                handleChatCompletions(out, activeToken, new String(bodyBytes, StandardCharsets.UTF_8));
-            } else {
-                writeJsonResponse(out, 404, "{\"error\":{\"message\":\"Not found: " + path + "\"}}");
+            out = new TrackingOutputStream(s.getOutputStream());
+            try {
+                serveRequest(in, out);
+            } catch (Exception e) {
+                Log.w(TAG, "Request failed", e);
+                reportFailure(out, e);
             }
         } catch (Exception e) {
             Log.w(TAG, "Client error: " + e.getMessage());
         }
+    }
+
+    // Never drop the connection silently: the WebView would only see
+    // "Failed to fetch". Send the real cause as a JSON error (or as a final SSE
+    // chunk when the stream had already started).
+    private static void reportFailure(TrackingOutputStream out, Exception e) {
+        String msg = "Claude bridge error: " + e.getClass().getSimpleName()
+                + (e.getMessage() != null ? ": " + e.getMessage() : "");
+        try {
+            if (!out.started) {
+                writeJsonResponse(out, 502, new JSONObject().put("error",
+                        new JSONObject().put("message", msg)).toString());
+            } else {
+                JSONObject chunk = new JSONObject().put("choices", new JSONArray().put(new JSONObject()
+                        .put("index", 0)
+                        .put("delta", new JSONObject().put("content", "\n[" + msg + "]"))
+                        .put("finish_reason", "stop")));
+                out.write(("data: " + chunk + "\n\ndata: [DONE]\n\n").getBytes(StandardCharsets.UTF_8));
+                out.flush();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void serveRequest(InputStream in, OutputStream out) throws Exception {
+        String requestLine = readLine(in);
+        if (requestLine == null || requestLine.isEmpty()) return;
+        String[] parts = requestLine.split(" ");
+        if (parts.length < 2) return;
+        String method = parts[0].toUpperCase(Locale.US);
+        String path = parts[1];
+        int qIdx = path.indexOf('?');
+        if (qIdx >= 0) path = path.substring(0, qIdx);
+
+        int contentLength = 0;
+        String authHeader = "";
+        String requestedHeaders = "";
+        String headerLine;
+        while ((headerLine = readLine(in)) != null && !headerLine.isEmpty()) {
+            int colon = headerLine.indexOf(':');
+            if (colon > 0) {
+                String name = headerLine.substring(0, colon).trim().toLowerCase(Locale.US);
+                String val = headerLine.substring(colon + 1).trim();
+                if ("content-length".equals(name)) {
+                    try { contentLength = Integer.parseInt(val); } catch (NumberFormatException ignored) {}
+                } else if ("authorization".equals(name)) {
+                    authHeader = val;
+                } else if ("access-control-request-headers".equals(name)) {
+                    requestedHeaders = val;
+                }
+            }
+        }
+
+        byte[] bodyBytes = new byte[0];
+        if (contentLength > 0 && contentLength < 16 * 1024 * 1024) {
+            bodyBytes = readExact(in, contentLength);
+        }
+
+        if ("OPTIONS".equals(method)) {
+            writePreflightResponse(out, requestedHeaders);
+            return;
+        }
+
+        String activeToken = this.token;
+        if ((activeToken == null || activeToken.isEmpty()) && authHeader.toLowerCase(Locale.US).startsWith("bearer ")) {
+            activeToken = authHeader.substring(7).trim();
+        }
+
+        if ("GET".equals(method) && (path.endsWith("/models") || "/models".equals(path))) {
+            handleModels(out, activeToken);
+        } else if ("POST".equals(method) && (path.endsWith("/chat/completions") || "/chat/completions".equals(path))) {
+            handleChatCompletions(out, activeToken, new String(bodyBytes, StandardCharsets.UTF_8));
+        } else {
+            writeJsonResponse(out, 404, "{\"error\":{\"message\":\"Not found: " + path + "\"}}");
+        }
+    }
+
+    // CORS preflight. "Access-Control-Allow-Headers: *" does not cover
+    // Authorization per the Fetch spec, so echo the requested headers and list
+    // the ones the UI sends explicitly.
+    private static void writePreflightResponse(OutputStream out, String requestedHeaders) throws Exception {
+        String allow = "Authorization, Content-Type";
+        if (requestedHeaders != null && !requestedHeaders.trim().isEmpty()) {
+            allow = allow + ", " + requestedHeaders.trim();
+        }
+        String hdr = "HTTP/1.1 204 No Content\r\n"
+                + "Content-Length: 0\r\n"
+                + "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Headers: " + allow + "\r\n"
+                + "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                + "Access-Control-Allow-Private-Network: true\r\n"
+                + "Access-Control-Max-Age: 600\r\n"
+                + "Connection: close\r\n\r\n";
+        out.write(hdr.getBytes(StandardCharsets.US_ASCII));
+        out.flush();
     }
 
     private void applyAnthropicHeaders(HttpURLConnection conn, String activeToken) {
