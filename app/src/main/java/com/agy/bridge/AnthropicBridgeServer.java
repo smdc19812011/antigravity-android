@@ -108,6 +108,87 @@ public final class AnthropicBridgeServer {
         return "http://127.0.0.1:" + port + "/v1";
     }
 
+    // ---- In-process chat (no WebView networking) ----
+    //
+    // The UI is an https page and the WebView refuses http:// subresources
+    // (MIXED_CONTENT_NEVER_ALLOW), so fetch() to http://127.0.0.1:<port> fails
+    // with "Failed to fetch" on device. Instead the UI hands the request body
+    // to native code, which runs the same handler and buffers the raw HTTP
+    // response; the UI polls the bytes and rebuilds a Response from them.
+
+    private static final class NativeCall {
+        final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        volatile boolean done;
+        volatile long lastPolled = System.currentTimeMillis();
+    }
+
+    private final java.util.concurrent.ConcurrentHashMap<String, NativeCall> nativeCalls =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Starts a /chat/completions request in-process; returns a call id for polling. */
+    public String startNativeChat(String reqBody, String fallbackToken) {
+        pruneNativeCalls();
+        final String id = java.util.UUID.randomUUID().toString();
+        final NativeCall call = new NativeCall();
+        nativeCalls.put(id, call);
+        String tok = this.token;
+        if ((tok == null || tok.isEmpty()) && fallbackToken != null) tok = fallbackToken.trim();
+        final String activeToken = tok;
+        executor.submit(() -> {
+            TrackingOutputStream out = new TrackingOutputStream(new OutputStream() {
+                @Override public void write(int b) { synchronized (call.buf) { call.buf.write(b); } }
+                @Override public void write(byte[] b, int off, int len) { synchronized (call.buf) { call.buf.write(b, off, len); } }
+            });
+            try {
+                handleChatCompletions(out, activeToken, reqBody == null ? "" : reqBody);
+            } catch (Exception e) {
+                Log.w(TAG, "Native chat failed", e);
+                reportFailure(out, e);
+            } finally {
+                call.done = true;
+            }
+        });
+        return id;
+    }
+
+    /**
+     * Returns {"done":bool,"data":"<base64 of response bytes from offset>"};
+     * {"error":"unknown call"} for an unknown id. Finished calls are dropped
+     * once all their bytes have been read.
+     */
+    public String pollNativeChat(String id, int offset) {
+        NativeCall call = id != null ? nativeCalls.get(id) : null;
+        if (call == null) return "{\"error\":\"unknown call\"}";
+        call.lastPolled = System.currentTimeMillis();
+        boolean done = call.done;
+        byte[] chunk;
+        synchronized (call.buf) {
+            byte[] all = call.buf.toByteArray();
+            int from = Math.max(0, Math.min(offset, all.length));
+            chunk = java.util.Arrays.copyOfRange(all, from, all.length);
+            if (done && from + chunk.length >= all.length && chunk.length == 0) nativeCalls.remove(id);
+        }
+        try {
+            return new JSONObject()
+                    .put("done", done)
+                    .put("data", android.util.Base64.encodeToString(chunk, android.util.Base64.NO_WRAP))
+                    .toString();
+        } catch (Exception e) {
+            return "{\"error\":\"encode failed\"}";
+        }
+    }
+
+    public void cancelNativeChat(String id) {
+        if (id != null) nativeCalls.remove(id);
+    }
+
+    private void pruneNativeCalls() {
+        long cutoff = System.currentTimeMillis() - 10 * 60_000L;
+        for (java.util.Map.Entry<String, NativeCall> e : nativeCalls.entrySet()) {
+            if (e.getValue().lastPolled < cutoff) nativeCalls.remove(e.getKey());
+        }
+    }
+
     /** Tracks whether any response bytes were sent, so errors can still be reported. */
     private static final class TrackingOutputStream extends java.io.FilterOutputStream {
         volatile boolean started;

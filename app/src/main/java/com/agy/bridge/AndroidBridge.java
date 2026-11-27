@@ -194,6 +194,27 @@ public final class AndroidBridge {
         return AnthropicBridgeServer.getInstance(appContext).getBaseUrl();
     }
 
+    // In-process Claude chat for the top-level UI (token-gated like saveBlob):
+    // the https WebView cannot fetch the http:// loopback bridge.
+    @JavascriptInterface
+    public String claudeChatStart(String token, String body, String apiKey) {
+        if (!matchesNativeBridgeToken(token)) return "";
+        return AnthropicBridgeServer.getInstance(appContext).startNativeChat(body, apiKey);
+    }
+
+    @JavascriptInterface
+    public String claudeChatPoll(String token, String id, int offset) {
+        if (!matchesNativeBridgeToken(token)) return "{\"error\":\"forbidden\"}";
+        return AnthropicBridgeServer.getInstance(appContext).pollNativeChat(id, offset);
+    }
+
+    @JavascriptInterface
+    public void claudeChatCancel(String token, String id) {
+        if (matchesNativeBridgeToken(token)) {
+            AnthropicBridgeServer.getInstance(appContext).cancelNativeChat(id);
+        }
+    }
+
     @JavascriptInterface
     public String getLastClaudeUsage() {
         return AnthropicBridgeServer.getInstance(appContext).getUsageJson();
